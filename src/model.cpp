@@ -57,6 +57,18 @@ struct CARHeader
 
 SIZE_ASSERT( CARHeader, 0x66 );
 
+struct UnpackedVertex
+{
+    unsigned short index;
+    unsigned short hash;
+    m_Vec3 pos_v3;
+    m_Vec3 face_normal;
+    m_Vec3 smoothed_normal;
+    unsigned short packed_normal;
+};
+
+SIZE_ASSERT( UnpackedVertex, 44 );
+
 static const unsigned int g_3o_model_texture_width= 64u;
 static const float g_3o_model_coords_scale= 1.0f / 2048.0f;
 
@@ -497,6 +509,106 @@ void LoadModel_car( const Vfs::FileContent& model_file, Model& out_model )
 	}
 
 	PC_ASSERT( sounds_offset == model_file.size() );
+}
+
+void CalculateNormals( Model& model )
+{
+    constexpr float normals_dot_limit = 0.7f; // cos of 45 degrees
+
+    std::vector<UnpackedVertex> vertices;
+
+    for( unsigned int s= 0u; s < model.submodels.size(); s++ )
+    {
+        Submodel& submodel= model.submodels[s];
+        for( unsigned int a= 0u; a < submodel.animations.size(); a++ )
+        {
+            Submodel::Animation& anim= submodel.animations[a];
+            for( unsigned int frame = 0u; frame < anim.frame_count; frame++ )
+            {
+                unsigned short first_index = ( anim.first_frame + frame ) * submodel.vertices.size() * 3u;
+
+                vertices.clear();
+
+                // fill unpacked vertices array
+                for( unsigned int pass= 0u; pass < 2; pass++ )
+                {
+                    std::vector<unsigned short>& indices= pass ? submodel.regular_triangles_indeces : submodel.transparent_triangles_indeces;
+                    PC_ASSERT( vertices.size() % 3 == 0 );
+                    for ( unsigned int i= 0u; i < indices.size(); i++ )
+                    {
+                        Submodel::AnimationVertex& vert= submodel.animations_vertices[first_index + indices[i]];
+
+                        vertices.emplace_back();
+                        UnpackedVertex &unpacked= vertices.back();
+                        unpacked.index= indices[i];
+                        unpacked.hash= vert.pos[0] + vert.pos[1] + vert.pos[2];
+                        unpacked.pos_v3= m_Vec3( vert.pos[0], vert.pos[1], vert.pos[2] );
+                        unpacked.face_normal= {};
+                        unpacked.smoothed_normal= {};
+                    }
+                }
+
+                // calculate face normals
+                for ( unsigned int v= 0u; v < vertices.size(); v+=3 )
+                {
+                    UnpackedVertex& v1 = vertices[v];
+                    UnpackedVertex& v2 = vertices[v + 1];
+                    UnpackedVertex& v3 = vertices[v + 2];
+
+                    m_Vec3 e1 = v2.pos_v3 - v1.pos_v3;
+                    m_Vec3 e2 = v3.pos_v3 - v1.pos_v3;
+                    m_Vec3 normal = mVec3Cross( e1, e2 ).Normalize();
+
+                    v1.face_normal = normal;
+                    v2.face_normal = normal;
+                    v3.face_normal = normal;
+
+                    v1.smoothed_normal = normal;
+                    v2.smoothed_normal = normal;
+                    v3.smoothed_normal = normal;
+                }
+
+                // smooth normals by same vertices position and angle
+                for ( unsigned int v= 0u; v < vertices.size(); v++ )
+                {
+                    UnpackedVertex& vert1= vertices[v];
+                    for ( unsigned int v2= v + 3; v2 < vertices.size(); v2++ )
+                    {
+                        UnpackedVertex& vert2= vertices[v2];
+
+                        if ( vert1.hash != vert2.hash || vert1.pos_v3 != vert2.pos_v3 )
+                            continue; // positions are not same
+
+                        if ( vert1.face_normal * vert2.face_normal > normals_dot_limit )
+                            continue; // normals are so different
+
+                        vert1.smoothed_normal+= vert2.face_normal;
+                        vert2.smoothed_normal+= vert1.face_normal;
+                    }
+
+                    // normalizing works as median value
+                    if ( vert1.smoothed_normal.SquareLength() >= 0.f ) {
+                        vert1.smoothed_normal.Normalize();
+
+                        // normalized spherical coordinates
+                        float theta= acos( vert1.smoothed_normal.z ) / Constants::pi;
+                        float phi= ( atan2( vert1.smoothed_normal.y, vert1.smoothed_normal.x ) + Constants::pi ) / Constants::two_pi;
+
+                        // pack normal in one short int
+                        vert1.packed_normal= (unsigned short)(theta * 64.f) | (unsigned short)(phi * 64.f) << 8;
+                    }
+                }
+
+                // apply result
+                for ( unsigned int v= 0u; v < vertices.size(); v++ )
+                {
+                    UnpackedVertex& unpacked= vertices[v];
+                    Submodel::AnimationVertex& vert= submodel.animations_vertices[first_index + unpacked.index];
+                    vert.normal[0]= (short)unpacked.packed_normal;
+                }
+            }
+        }
+    }
 }
 
 } // namespace ChasmReverse

@@ -29,7 +29,7 @@ struct Submodel
 	struct AnimationVertex
 	{
 		short pos[3];
-		short reserved[1];
+		short normal[1];
 	};
 
 	SIZE_ASSERT( AnimationVertex, 8u );
@@ -75,5 +75,7 @@ void LoadModel_o3(
 	Model& out_model );
 
 void LoadModel_car( const Vfs::FileContent& model_file, Model& out_model );
+
+void CalculateNormals( Model& out_model );
 
 } // namespace ChasmReverse
