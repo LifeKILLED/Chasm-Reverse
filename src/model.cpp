@@ -59,15 +59,15 @@ SIZE_ASSERT( CARHeader, 0x66 );
 
 struct UnpackedVertex
 {
-    unsigned short index;
-    unsigned short hash;
-    m_Vec3 pos_v3;
-    m_Vec3 face_normal;
-    m_Vec3 smoothed_normal;
-    unsigned short packed_normal;
+    unsigned short index {};
+    long hash {};
+    m_Vec3 pos_v3 {};
+    m_Vec3 face_normal {};
+    m_Vec3 smoothed_normal {};
+    unsigned short packed_normal {};
 };
 
-SIZE_ASSERT( UnpackedVertex, 44 );
+SIZE_ASSERT( UnpackedVertex, 56 );
 
 static const unsigned int g_3o_model_texture_width= 64u;
 static const float g_3o_model_coords_scale= 1.0f / 2048.0f;
@@ -117,6 +117,8 @@ static unsigned char GroupIdToGroupsMask( const unsigned char group_id )
 	// 64 is unsused. Map to it "zero".
 	return group_id == 0 ? 64u : group_id;
 }
+
+void CalculateNormals( Model& out_model );
 
 void LoadModel_o3( const Vfs::FileContent& model_file, const Vfs::FileContent& animation_file, Model& out_model )
 {
@@ -251,6 +253,8 @@ void LoadModel_o3( const Vfs::FileContent& model_file, const Vfs::FileContent& a
 	out_model.animations_bboxes.resize( out_model.frame_count );
 	for( unsigned int i= 0u; i < out_model.frame_count; i++ )
 		CalculateBoundingBox( vertices + i * vertex_count, vertex_count, out_model.animations_bboxes[i] );
+
+    //CalculateNormals( out_model );
 }
 
 void LoadModel_o3(
@@ -299,6 +303,8 @@ void LoadModel_o3(
 
 	out_model.animations.resize( animation_files_count );
 	std::memcpy( out_model.animations.data(), animations, sizeof(Model::Animation) * animation_files_count );
+
+    //CalculateNormals( out_model );
 }
 
 void LoadModel_car( const Vfs::FileContent& model_file, Model& out_model )
@@ -509,13 +515,15 @@ void LoadModel_car( const Vfs::FileContent& model_file, Model& out_model )
 	}
 
 	PC_ASSERT( sounds_offset == model_file.size() );
+
+    CalculateNormals( out_model );
 }
 
 void CalculateNormals( Model& model )
 {
     constexpr float normals_dot_limit = 0.7f; // cos of 45 degrees
 
-    std::vector<UnpackedVertex> vertices;
+    std::vector<UnpackedVertex> unpacked_verts;
 
     for( unsigned int s= 0u; s < model.submodels.size(); s++ )
     {
@@ -527,7 +535,9 @@ void CalculateNormals( Model& model )
             {
                 unsigned short first_index = ( anim.first_frame + frame ) * submodel.vertices.size() * 3u;
 
-                vertices.clear();
+                size_t verts_count = submodel.regular_triangles_indeces.size() + submodel.transparent_triangles_indeces.size();
+                unpacked_verts.clear();
+                unpacked_verts.reserve( verts_count );
 
                 // fill unpacked vertices array
                 for( unsigned int pass= 0u; pass < 2; pass++ )
@@ -538,8 +548,8 @@ void CalculateNormals( Model& model )
                     {
                         Submodel::AnimationVertex& vert= submodel.animations_vertices[first_index + indices[i]];
 
-                        vertices.emplace_back();
-                        UnpackedVertex &unpacked= vertices.back();
+                        unpacked_verts.emplace_back();
+                        UnpackedVertex &unpacked= unpacked_verts.back();
                         unpacked.index= indices[i];
                         unpacked.hash= vert.pos[0] + vert.pos[1] + vert.pos[2];
                         unpacked.pos_v3= m_Vec3( vert.pos[0], vert.pos[1], vert.pos[2] );
@@ -549,11 +559,11 @@ void CalculateNormals( Model& model )
                 }
 
                 // calculate face normals
-                for ( unsigned int v= 0u; v < vertices.size(); v+=3 )
+                for ( unsigned int v= 0u; v < unpacked_verts.size(); v+=3 )
                 {
-                    UnpackedVertex& v1 = vertices[v];
-                    UnpackedVertex& v2 = vertices[v + 1];
-                    UnpackedVertex& v3 = vertices[v + 2];
+                    UnpackedVertex& v1 = unpacked_verts[v];
+                    UnpackedVertex& v2 = unpacked_verts[v + 1];
+                    UnpackedVertex& v3 = unpacked_verts[v + 2];
 
                     m_Vec3 e1 = v2.pos_v3 - v1.pos_v3;
                     m_Vec3 e2 = v3.pos_v3 - v1.pos_v3;
@@ -569,12 +579,13 @@ void CalculateNormals( Model& model )
                 }
 
                 // smooth normals by same vertices position and angle
-                for ( unsigned int v= 0u; v < vertices.size(); v++ )
+                unsigned int vertices_count = unpacked_verts.size();
+                for ( unsigned int v= 0u; v < vertices_count; v++ )
                 {
-                    UnpackedVertex& vert1= vertices[v];
-                    for ( unsigned int v2= v + 3; v2 < vertices.size(); v2++ )
+                    UnpackedVertex& vert1= unpacked_verts[v];
+                    for ( unsigned int v2= v + 3; v2 < vertices_count; v2++ )
                     {
-                        UnpackedVertex& vert2= vertices[v2];
+                        UnpackedVertex& vert2= unpacked_verts[v2];
 
                         if ( vert1.hash != vert2.hash || vert1.pos_v3 != vert2.pos_v3 )
                             continue; // positions are not same
@@ -600,9 +611,9 @@ void CalculateNormals( Model& model )
                 }
 
                 // apply result
-                for ( unsigned int v= 0u; v < vertices.size(); v++ )
+                for ( unsigned int v= 0u; v < unpacked_verts.size(); v++ )
                 {
-                    UnpackedVertex& unpacked= vertices[v];
+                    UnpackedVertex& unpacked= unpacked_verts[v];
                     Submodel::AnimationVertex& vert= submodel.animations_vertices[first_index + unpacked.index];
                     vert.normal[0]= (short)unpacked.packed_normal;
                 }
